@@ -714,14 +714,17 @@ function Find-DuplicateFiles {
         foreach ($hashGroup in $filesByHash) {
             $files = $hashGroup.Group | Sort-Object -Property { $_.FileInfo.CreationTime }
             $originalFile = $files[0].FileInfo
+            $originalHash = $files[0].Hash
             $files | Select-Object -Skip 1 | ForEach-Object {
                 $duplicateFiles += [PSCustomObject]@{
-                    OriginalFilePath         = $originalFile.FullName
-                    OriginalFileCreationTime = $originalFile.CreationTime
-                    OriginalFileSize         = $originalFile.Length
-                    DuplicateFilePath       = $_.FileInfo.FullName
-                    DuplicateFileCreationTime = $_.FileInfo.CreationTime
-                    DuplicateFileSize       = $_.FileInfo.Length
+                    OriginalFilePath            = $originalFile.FullName
+                    OriginalFileCreationTime    = $originalFile.CreationTime
+                    OriginalFileSize            = $originalFile.Length
+                    OriginalFileHash            = $originalHash
+                    DuplicateFilePath           = $_.FileInfo.FullName
+                    DuplicateFileCreationTime   = $_.FileInfo.CreationTime
+                    DuplicateFileSize           = $_.FileInfo.Length
+                    DuplicateFileHash           = $_.Hash
                 }
             }
         }
