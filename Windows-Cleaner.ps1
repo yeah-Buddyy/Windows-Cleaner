@@ -221,14 +221,72 @@ try {
     Write-Error "An error occurred: $_"
 }
 
-# Remove Dotnet CLI telemetry
-$dotnetCliTelemetry = "$env:USERPROFILE\.dotnet\TelemetryStorageService"
-if (Test-Path -Path "$dotnetCliTelemetry") {
-    Write-Host "Removing Dotnet cli telemetry" -ForegroundColor Green
-    # Remove the directory and all its contents
-    Remove-Item -Path $dotnetCliTelemetry -Recurse -Force -ErrorAction SilentlyContinue
+# Function to clear the SoftwareDistribution Download folder
+function Clear-SoftwareDistributionDownloadFolder {
+    param (
+        [string]$FolderPath
+    )
 
-    Write-Output "Deleted directory and all contents at: $dotnetCliTelemetry"
+    try {
+        Write-Host "Clear the SoftwareDistributionDownloadFolder" -ForegroundColor Green
+        # Stop the BITS service and the Windows Update service
+        Write-Output "Stopping BITS and Windows Update services..."
+        Stop-Service -Name "bits" -Force -ErrorAction Stop
+        Stop-Service -Name "wuauserv" -Force -ErrorAction Stop
+
+        # Clear the contents of the Download folder
+        Write-Output "Clearing contents of $FolderPath..."
+        Get-ChildItem -Path $FolderPath -Recurse | ForEach-Object {
+            try {
+                Remove-Item -Path $_.FullName -Recurse -Force -ErrorAction Stop
+                Write-Host "Deleted: $($_.FullName)" -ForegroundColor Yellow
+            } catch {
+                Write-Host "Failed to delete $($_.FullName): $_" -ForegroundColor Red
+            }
+        }
+
+        # Start the BITS service and the Windows Update service
+        Write-Output "Starting BITS and Windows Update services..."
+        Start-Service -Name "bits"
+        Start-Service -Name "wuauserv"
+
+        Write-Output "Cleared all folders and files from $FolderPath successfully."
+    } catch {
+        Write-Error "An error occurred while clearing $FolderPath $_"
+    }
+}
+
+function Get-PendingWindowsUpdates {
+    # Create an update session
+    $UpdateSession = New-Object -ComObject Microsoft.Update.Session
+    
+    # Create an update searcher
+    $UpdateSearcher = $UpdateSession.CreateupdateSearcher()
+    
+    # Search for updates that are not hidden and not installed
+    $Updates = @($UpdateSearcher.Search("IsHidden=0 and IsInstalled=0").Updates)
+    
+    if ($Updates.Count -gt 0) {
+        Write-Output "Pending/Missing Windows Updates:"
+        $Updates | Select-Object Title, Description
+        return $true
+    } else {
+        Write-Output "No pending or missing Windows updates found."
+        return $false
+    }
+}
+
+# Call the function
+$updatesAvailable = Get-PendingWindowsUpdates
+if ($updatesAvailable) {
+    Write-Output "There are pending or missing Windows updates."
+} else {
+    Write-Output "System is up to date."
+
+    # Define the path to the SoftwareDistribution Download folder
+    $softwareDistributionDownloadFolderPath = "$env:WINDIR\SoftwareDistribution\Download"
+    # Call the function to clear the Download folder
+    Clear-SoftwareDistributionDownloadFolder -FolderPath $softwareDistributionDownloadFolderPath
 }
 
 # Removing .etl files
@@ -547,6 +605,16 @@ if (Test-Path -Path $reportQueuePath) {
     Write-Host "Contents of $reportQueuePath have been deleted." -ForegroundColor Yellow
 } else {
     Write-Output "Path does not exist: $reportQueuePath"
+}
+
+$werTempPath = "$env:ALLUSERSPROFILE\Microsoft\Windows\WER\Temp"
+
+if (Test-Path -Path $werTempPath) {
+    Write-Host "Delete queued and archived Windows Error Reporting (WER) reports" -ForegroundColor Green
+    Get-ChildItem -Path $werTempPath -Recurse | Remove-Item -Recurse -Force
+    Write-Host "Contents of $werTempPath have been deleted." -ForegroundColor Yellow
+} else {
+    Write-Output "Path does not exist: $werTempPath"
 }
 
 # Delete dmp files
