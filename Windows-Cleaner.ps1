@@ -320,13 +320,16 @@ foreach ($path in $etlPaths) {
                     Write-Host "Failed to delete $($_.FullName): $_" -ForegroundColor Red
                 } finally {
                     # Restore the original ownership and ACLs if file still exists
-                    if ($originalAcl -ne $null -and $originalOwner -ne $null) {
+                    if ($originalAcl.Value -ne $null -and $originalOwner.Value -ne $null) {
                         if (Test-Path "$($_.TargetObject)" -PathType Leaf) {
                             Restore-Ownership -Path "$($_.TargetObject)" -OriginalAcl $originalAcl -OriginalOwner $originalOwner
                         }
                     } else {
                         Write-Warning "Original ACL and owner information is missing, cannot restore."
                     }
+                    # Reset the [ref] variables after each iteration
+                    $originalAcl.Value = $null
+                    $originalOwner.Value = $null
                 }
             }
         }
@@ -361,11 +364,14 @@ foreach ($path in $etlPaths) {
                         Write-Error "An error occurred during the operation: $_"
                     } finally {
                         # Restore the original ownership and ACLs
-                        if ($originalAcl -ne $null -and $originalOwner -ne $null) {
+                        if ($originalAcl.Value -ne $null -and $originalOwner.Value -ne $null) {
                             Restore-Ownership -Path "$($_.TargetObject)" -OriginalAcl $originalAcl -OriginalOwner $originalOwner
                         } else {
                             Write-Warning "Original ACL and owner information is missing, cannot restore."
                         }
+                        # Reset the [ref] variables after each iteration
+                        $originalAcl.Value = $null
+                        $originalOwner.Value = $null
                     }
                 }
             }
@@ -479,13 +485,16 @@ foreach ($path in $rbsPaths) {
                     Write-Host "Failed to delete $($_.FullName): $_" -ForegroundColor Red
                 } finally {
                     # Restore the original ownership and ACLs if file still exists
-                    if ($originalAcl -ne $null -and $originalOwner -ne $null) {
+                    if ($originalAcl.Value -ne $null -and $originalOwner.Value -ne $null) {
                         if (Test-Path "$($_.TargetObject)" -PathType Leaf) {
                             Restore-Ownership -Path "$($_.TargetObject)" -OriginalAcl $originalAcl -OriginalOwner $originalOwner
                         }
                     } else {
                         Write-Warning "Original ACL and owner information is missing, cannot restore."
                     }
+                    # Reset the [ref] variables after each iteration
+                    $originalAcl.Value = $null
+                    $originalOwner.Value = $null
                 }
             }
         }
@@ -518,11 +527,14 @@ foreach ($path in $rbsPaths) {
                         Write-Error "An error occurred during the operation: $_"
                     } finally {
                         # Restore the original ownership and ACLs
-                        if ($originalAcl -ne $null -and $originalOwner -ne $null) {
+                        if ($originalAcl.Value -ne $null -and $originalOwner.Value -ne $null) {
                             Restore-Ownership -Path "$($_.TargetObject)" -OriginalAcl $originalAcl -OriginalOwner $originalOwner
                         } else {
                             Write-Warning "Original ACL and owner information is missing, cannot restore."
                         }
+                        # Reset the [ref] variables after each iteration
+                        $originalAcl.Value = $null
+                        $originalOwner.Value = $null
                     }
                 }
             }
