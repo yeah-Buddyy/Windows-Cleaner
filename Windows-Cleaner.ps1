@@ -826,6 +826,33 @@ $reclaimedSpaceMB = [math]::round($reclaimedSpaceBytes / 1MB, 2)
 
 Write-Host "Reclaimed Space: $reclaimedSpaceGB GB ($reclaimedSpaceMB MB) ($reclaimedSpaceBytes Bytes)" -ForegroundColor Green
 
+Write-Host "Rebuilding performance counters" -ForegroundColor Green
+if (Test-Path "$env:SystemRoot\SYSTEM32\lodctr.exe" -PathType Leaf) {
+    Write-Host "Rebuild Performance Counters for x32 Systems" -ForegroundColor Yellow
+    Start-Process -FilePath "$env:SystemRoot\SYSTEM32\lodctr.exe" -ArgumentList "/R" -Wait
+}
+if (Test-Path "$env:SystemRoot\sysWOW64\lodctr.exe" -PathType Leaf) {
+    Write-Host "Rebuild Performance Counters for x64 Systems" -ForegroundColor Yellow
+    Start-Process -FilePath "$env:SystemRoot\sysWOW64\lodctr.exe" -ArgumentList "/R" -Wait
+}
+if (Test-Path "$env:SystemRoot\SYSTEM32\wbem\WinMgmt.exe" -PathType Leaf) {
+    Write-Host "Resynchronization of performance counters" -ForegroundColor Yellow
+    Start-Process -FilePath "$env:SystemRoot\SYSTEM32\wbem\WinMgmt.exe" -ArgumentList "/RESYNCPERF" -Wait
+}
+Write-Host "Restarting pla Service" -ForegroundColor Yellow
+Stop-Service -Name "pla" -Force -ErrorAction SilentlyContinue
+Start-Service -Name "pla" -ErrorAction SilentlyContinue
+
+Write-Host "Restarting winmgmt Service" -ForegroundColor Yellow
+Stop-Service -Name "Winmgmt" -Force -ErrorAction SilentlyContinue
+Start-Service -Name "Winmgmt" -ErrorAction SilentlyContinue
+
+# https://www.deploymentresearch.com/why-adding-winsat-formal-to-your-task-sequence-can-be-a-shiny-thing-to-do/
+if (Test-Path "$env:SystemRoot\SYSTEM32\WinSAT.exe" -PathType Leaf) {
+    Write-Host "Running winsat formal" -ForegroundColor Green
+    Start-Process -FilePath "$env:SystemRoot\SYSTEM32\WinSAT.exe" -ArgumentList "formal -restart clean" -Wait
+}
+
 Write-Host "Press any key to exit..."
 $host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
 exit
