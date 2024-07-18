@@ -11,6 +11,81 @@ $console = [System.Console]::BufferHeight = $bufferHeight
 
 Write-Host "Buffer size increased to Height: $bufferHeight" -ForegroundColor Green
 
+# Create backup folder
+if (-not (Test-Path -Path "$PSScriptRoot\Backup")) {
+    New-Item -ItemType Directory -Path "$PSScriptRoot\Backup" -Force | Out-Null
+}
+
+function Save-Acl {
+    param (
+        [parameter(Mandatory = $true)][string]$Path,
+        [parameter(Mandatory = $true)][string]$OutputFile
+    )
+
+    try {
+        if (-not (Test-Path -Path $Path)) {
+            Write-Error "The specified path does not exist: $Path"
+            return
+        }
+
+        # Get the ACL of the specified path
+        $acl = Get-Acl -Path $Path
+
+        # Export the ACL to an XML file
+        $acl | Export-Clixml -Path $OutputFile -ErrorAction Stop
+
+        Write-Output "ACL for '$Path' has been successfully saved to '$OutputFile'."
+    } catch {
+        Write-Error "Failed to save ACL: $_"
+    }
+}
+
+function Restore-Acl {
+    param (
+        [parameter(Mandatory = $true)][string]$Path,
+        [parameter(Mandatory = $true)][string]$InputFile
+    )
+
+    try {
+        if (-not (Test-Path -Path $Path)) {
+            Write-Error "The specified path does not exist: $Path"
+            return
+        }
+
+        if (-not (Test-Path -Path $InputFile)) {
+            Write-Error "The specified input file does not exist: $InputFile"
+            return
+        }
+
+        # Import the ACL from the XML file
+        $acl = Import-Clixml -Path $InputFile -ErrorAction Stop
+
+        # Set the ACL to the specified path
+        Set-Acl -Path $Path -AclObject $acl
+
+        Write-Output "ACL for '$Path' has been successfully restored from '$InputFile'."
+    } catch {
+        Write-Error "Failed to restore ACL: $_"
+    }
+}
+# Restore the ACL
+# Restore-Acl -Path "C:\Path\To\FileOrFolder" -InputFile "C:\Path\To\Save\Acl.xml"
+
+function Transform-ToValidName {
+    param (
+        [parameter(Mandatory=$true)]
+        [string]$Path
+    )
+
+    # Get the invalid characters for file and folder names
+    $invalidChars = [IO.Path]::GetInvalidFileNameChars()
+
+    # Replace invalid characters with an underscore
+    $validName = $Path -replace "[$([RegEx]::Escape([string]::Join('', $invalidChars)))]", "_"
+
+    return $validName
+}
+
 # Initialize reference variables to store original ACL and owner
 [ref]$originalAcl = $null
 [ref]$originalOwner = $null
@@ -25,6 +100,20 @@ function Take-Ownership {
 
     try {
         # Backup the current owner and ACLs
+        if (Test-Path $Path -PathType Container) {
+            $validFolderName = Transform-ToValidName -Path $Path
+            if (-not (Test-Path -Path "$PSScriptRoot\Backup\$validFolderName")) {
+                # Save the ACL
+                Save-Acl -Path $Path -OutputFile "$PSScriptRoot\Backup\$validFolderName"
+            }
+        } else {
+            $validFileName = Transform-ToValidName -Path $Path
+            if (-not (Test-Path -Path "$PSScriptRoot\Backup\$validFileName" -PathType Leaf)) {
+                # Save the ACL
+                Save-Acl -Path $Path -OutputFile "$PSScriptRoot\Backup\$validFileName"
+            }
+        }
+
         $OriginalAcl.Value = Get-Acl -Path $Path
         $OriginalOwner.Value = $OriginalAcl.Value.Owner
 
