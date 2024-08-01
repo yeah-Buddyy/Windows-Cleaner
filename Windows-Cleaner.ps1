@@ -12,8 +12,9 @@ $console = [System.Console]::BufferHeight = $bufferHeight
 Write-Host "Buffer size increased to Height: $bufferHeight" -ForegroundColor Green
 
 # Create backup folder
-if (-not (Test-Path -Path "$PSScriptRoot\Backup")) {
-    New-Item -ItemType Directory -Path "$PSScriptRoot\Backup" -Force | Out-Null
+$aclBackupPath = "$PSScriptRoot\ACL-Backup"
+if (-not (Test-Path -Path $aclBackupPath)) {
+    New-Item -ItemType Directory -Path $aclBackupPath -Force | Out-Null
 }
 
 function Save-Acl {
@@ -102,15 +103,15 @@ function Take-Ownership {
         # Backup the current owner and ACLs
         if (Test-Path $Path -PathType Container) {
             $validFolderName = Transform-ToValidName -Path $Path
-            if (-not (Test-Path -Path "$PSScriptRoot\Backup\$validFolderName")) {
+            if (-not (Test-Path -Path "$aclBackupPath\$validFolderName")) {
                 # Save the ACL
-                Save-Acl -Path $Path -OutputFile "$PSScriptRoot\Backup\$validFolderName"
+                Save-Acl -Path $Path -OutputFile "$aclBackupPath\$validFolderName"
             }
         } else {
             $validFileName = Transform-ToValidName -Path $Path
-            if (-not (Test-Path -Path "$PSScriptRoot\Backup\$validFileName" -PathType Leaf)) {
+            if (-not (Test-Path -Path "$aclBackupPath\$validFileName" -PathType Leaf)) {
                 # Save the ACL
-                Save-Acl -Path $Path -OutputFile "$PSScriptRoot\Backup\$validFileName"
+                Save-Acl -Path $Path -OutputFile "$aclBackupPath\$validFileName"
             }
         }
 
@@ -311,6 +312,7 @@ try {
 }
 
 # Function to clear the SoftwareDistribution Download folder
+# Only recommended if there are no pending Windows updates. We will take care of this ;)
 function Clear-SoftwareDistributionDownloadFolder {
     param (
         [string]$FolderPath
@@ -639,7 +641,7 @@ $wbemLogsPath = "$Env:WinDir\System32\wbem\Logs"
 
 if (Test-Path -Path "$wbemLogsPath") {
     Write-Host "Removing wbem log files" -ForegroundColor Green
-    # Get all .log and .txt files in the Temp directory and its subdirectories
+    # Get all .log and .txt files in the directory and its subdirectories
     Get-ChildItem -Path $wbemLogsPath -Recurse -File | Where-Object {
         $_.Extension -eq ".log" -or $_.Extension -eq ".txt" -or $_.Extension -eq ".lo_"
     } | ForEach-Object {
@@ -661,9 +663,9 @@ if (Test-Path -Path "$catroot2LogsPath") {
     Write-Output "Stopping the cryptsvc service..."
     Stop-Service -Name "cryptsvc" -Force -ErrorAction SilentlyContinue
 
-    # Get all .log and .txt files in the Temp directory and its subdirectories
+    # Get all .log and .txt files in the directory and its subdirectories
     Get-ChildItem -Path $catroot2LogsPath -Recurse -File | Where-Object {
-        $_.Extension -eq ".log" -or $_.Extension -eq ".txt"
+        $_.Extension -eq ".log" -or $_.Extension -eq ".txt" -or $_.Extension -eq ".lo_"
     } | ForEach-Object {
         try {
             Remove-Item -Path $_.FullName -Force -ErrorAction Stop
@@ -676,6 +678,26 @@ if (Test-Path -Path "$catroot2LogsPath") {
     Start-Service -Name "cryptsvc" -ErrorAction SilentlyContinue
 
     Write-Output "All .log and .txt files in $catroot2LogsPath have been processed."
+}
+
+$windowsLogsPath = "$Env:WinDir\Logs"
+
+if (Test-Path -Path "$windowsLogsPath") {
+    Write-Host "Removing windows log files" -ForegroundColor Green
+
+    # Get all .log and .etl files in the directory and its subdirectories
+    Get-ChildItem -Path $windowsLogsPath -Recurse -File | Where-Object {
+        $_.Extension -eq ".log" -or $_.Extension -eq ".etl" -or $_.Extension -eq ".lo_"
+    } | ForEach-Object {
+        try {
+            Remove-Item -Path $_.FullName -Force -ErrorAction Stop
+            Write-Host "Deleted: $($_.FullName)" -ForegroundColor Yellow
+        } catch {
+            Write-Host "Failed to delete $($_.FullName): $_" -ForegroundColor Red
+        }
+    }
+
+    Write-Output "All .log and .etl files in $windowsLogsPath have been processed."
 }
 
 #$reportArchivePath = "$env:ALLUSERSPROFILE\Microsoft\Windows\WER\ReportArchive"
@@ -901,6 +923,124 @@ if (Test-Path -Path $cleanMgrPath) {
 Write-Host "Clear RecycleBin" -ForegroundColor Green
 Clear-RecycleBin -Force -ErrorAction SilentlyContinue
 
+# https://support.microsoft.com/en-us/topic/use-the-system-file-checker-tool-to-repair-missing-or-corrupted-system-files-79aa86cb-ca52-166a-92a3-966e85d4094e
+# https://superuser.com/a/1600121
+# %WinDir%\Logs\DISM\dism.log
+# %WinDir%\Logs\CBS\CBS.log
+
+# Cleans the Component Store of any broken hard links It's imperative folks on Insider Builds run this regularly due to the frequent updates
+# Run the DISM command
+Write-Host "Running DISM StartComponentCleanup" -ForegroundColor Green
+$processStartComponentCleanup = Start-Process -FilePath "Dism.exe" -ArgumentList "/Online /Cleanup-Image /StartComponentCleanup" -Verb RunAs -PassThru
+
+# Wait for the process to exit
+$processStartComponentCleanup | Wait-Process
+
+# Get the exit code
+$exitCodeStartComponentCleanup = $processStartComponentCleanup.ExitCode
+
+# Check the exit code
+if ($exitCodeStartComponentCleanup -eq 0) {
+    Write-Output "The StartComponentCleanup operation completed successfully with exit code $exitCodeStartComponentCleanup."
+} elseif ($exitCodeStartComponentCleanup -eq 3010) {
+    Write-Output "The StartComponentCleanup operation completed successfully and a restart is required with exit code $exitCodeStartComponentCleanup."
+} else {
+    Write-Host "The StartComponentCleanup operation failed with exit code $exitCodeStartComponentCleanup." -ForegroundColor Red
+}
+
+# Verifies and fixes any corruption in the Component Store by verifying its system file backups against known good copies from the Windows Update servers through hash comparison
+# Run the DISM command
+Write-Host "Running DISM RestoreHealth" -ForegroundColor Green
+$processRestoreHealth = Start-Process -FilePath "Dism.exe" -ArgumentList "/Online /Cleanup-Image /RestoreHealth" -Verb RunAs -PassThru
+
+# Wait for the process to exit
+$processRestoreHealth | Wait-Process
+
+# Get the exit code
+$exitCodeRestoreHealth = $processRestoreHealth.ExitCode
+
+# Check the exit code
+if ($exitCodeRestoreHealth -eq 0) {
+    Write-Output "The RestoreHealth operation completed successfully with exit code $exitCodeRestoreHealth."
+} elseif ($exitCodeRestoreHealth -eq 3010) {
+    Write-Output "The RestoreHealth operation completed successfully and a restart is required with exit code $exitCodeRestoreHealth."
+} else {
+    Write-Host "The RestoreHealth operation failed with exit code $exitCodeRestoreHealth." -ForegroundColor Red
+}
+
+# The CheckHealth parameter checks whether the image has been flagged as corrupted by a failed process and whether the corruption can be repaired.
+# Run the DISM command
+Write-Host "Running DISM CheckHealth" -ForegroundColor Green
+$processCheckHealth = Start-Process -FilePath "Dism.exe" -ArgumentList "/Online /Cleanup-Image /CheckHealth" -Verb RunAs -PassThru
+
+# Wait for the process to exit
+$processCheckHealth | Wait-Process
+
+# Get the exit code
+$exitCodeCheckHealth = $processCheckHealth.ExitCode
+
+# Check the exit code
+if ($exitCodeCheckHealth -eq 0) {
+    Write-Output "The CheckHealth operation completed successfully with exit code $exitCodeCheckHealth."
+} elseif ($exitCodeCheckHealth -eq 3010) {
+    Write-Output "The CheckHealth operation completed successfully and a restart is required with exit code $exitCodeCheckHealth."
+} else {
+    Write-Host "The CheckHealth operation failed with exit code $exitCodeCheckHealth." -ForegroundColor Red
+}
+
+# The ScanHealth parameter scans the image for component store corruption. This operation will take several minutes.
+# Run the DISM command
+Write-Host "Running DISM ScanHealth" -ForegroundColor Green
+$processScanHealth = Start-Process -FilePath "Dism.exe" -ArgumentList "/Online /Cleanup-Image /ScanHealth" -Verb RunAs -PassThru
+
+# Wait for the process to exit
+$processScanHealth | Wait-Process
+
+# Get the exit code
+$exitCodeScanHealth = $processScanHealth.ExitCode
+
+# Check the exit code
+if ($exitCodeScanHealth -eq 0) {
+    Write-Output "The ScanHealth operation completed successfully with exit code $exitCodeScanHealth."
+} elseif ($exitCodeScanHealth -eq 3010) {
+    Write-Output "The ScanHealth operation completed successfully and a restart is required with exit code $exitCodeScanHealth."
+} else {
+    Write-Host "The ScanHealth operation failed with exit code $exitCodeScanHealth." -ForegroundColor Red
+}
+
+# SFC always assumes the Component Store is not corrupted and is why the DISM /RestoreHealth parameter should always be run prior to SFC; 
+# not doing so allows a corrupted Component Store to potentially replace a good system file with a corrupted one or fail to fix corruption within %WinDir% altogether
+if ($exitCodeCheckHealth -eq 0 -and $exitCodeScanHealth -eq 0) {
+    Write-Host "Running SFC ScanNow" -ForegroundColor Green
+    # Verifies and fixes any corruption within %WinDir% by verifying against the known good copies within the Component Store through hash comparison
+    # Run the SFC command
+    $processScanNow = Start-Process -FilePath "Sfc.exe" -ArgumentList "/ScanNow" -Verb RunAs -PassThru
+
+    # Wait for the process to exit
+    $processScanNow | Wait-Process
+
+    # Get the exit code
+    $exitCodeScanNow = $processScanNow.ExitCode
+
+    # Check the exit code
+    # https://github.com/MicrosoftDocs/windowsserverdocs/issues/7391
+    # Exit Code 0 
+    # No integrity violations were found. This is indeed the ideal outcome, indicating all protected system files are healthy.
+
+    # Exit Code 1
+    # System File Checker found corrupt files and attempted to repair them. This doesn't necessarily guarantee successful repair. 
+    # SFC checks if it has a cached copy of the healthy file and replaces the corrupt one. However, if the cached copy is also corrupt or unavailable, the repair may not be successful.
+
+    # Exit Code 2
+    # System File Checker found corrupt files but could not repair them. This usually means the tool lacks a healthy copy of the file or encounters permission issues preventing the replacement. 
+    # It's crucial to investigate further and find alternative solutions for these unfixable files.
+    if ($exitCodeScanNow -eq 0) {
+        Write-Output "The ScanNow operation completed successfully with exit code $exitCodeScanNow."
+    } else {
+        Write-Host "The ScanNow operation failed with exit code $exitCodeScanNow." -ForegroundColor Red
+    }
+}
+
 # Capture free space after cleaning
 $finalFreeSpaceBytes = Get-FreeSpace -driveRoot $windowsDriveRoot
 $finalFreeSpaceGB = [math]::round($finalFreeSpaceBytes / 1GB, 2)
@@ -909,7 +1049,9 @@ $finalFreeSpaceMB = [math]::round($finalFreeSpaceBytes / 1MB, 2)
 Write-Host "Final Free Space: $finalFreeSpaceGB GB ($finalFreeSpaceMB MB) ($finalFreeSpaceBytes Bytes)" -ForegroundColor Green
 
 # Calculate reclaimed space
-$reclaimedSpaceBytes = $finalFreeSpaceBytes - $initialFreeSpaceBytes
+# exclude backup folder
+$minusBackupFolder = (Get-ChildItem -Path $aclBackupPath -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum
+$reclaimedSpaceBytes = $finalFreeSpaceBytes - $initialFreeSpaceBytes - $minusBackupFolder
 $reclaimedSpaceGB = [math]::round($reclaimedSpaceBytes / 1GB, 2)
 $reclaimedSpaceMB = [math]::round($reclaimedSpaceBytes / 1MB, 2)
 
@@ -917,22 +1059,22 @@ Write-Host "Reclaimed Space: $reclaimedSpaceGB GB ($reclaimedSpaceMB MB) ($recla
 
 Write-Host "Rebuilding performance counters" -ForegroundColor Green
 if (Test-Path "$env:SystemRoot\SYSTEM32\lodctr.exe" -PathType Leaf) {
-    Write-Host "Rebuild Performance Counters for x32 Systems" -ForegroundColor Yellow
+    Write-Output "Rebuild Performance Counters for x32 Systems"
     Start-Process -FilePath "$env:SystemRoot\SYSTEM32\lodctr.exe" -ArgumentList "/R" -Wait
 }
 if (Test-Path "$env:SystemRoot\sysWOW64\lodctr.exe" -PathType Leaf) {
-    Write-Host "Rebuild Performance Counters for x64 Systems" -ForegroundColor Yellow
+    Write-Output "Rebuild Performance Counters for x64 Systems"
     Start-Process -FilePath "$env:SystemRoot\sysWOW64\lodctr.exe" -ArgumentList "/R" -Wait
 }
 if (Test-Path "$env:SystemRoot\SYSTEM32\wbem\WinMgmt.exe" -PathType Leaf) {
-    Write-Host "Resynchronization of performance counters" -ForegroundColor Yellow
+    Write-Output "Resynchronization of performance counters"
     Start-Process -FilePath "$env:SystemRoot\SYSTEM32\wbem\WinMgmt.exe" -ArgumentList "/RESYNCPERF" -Wait
 }
-Write-Host "Restarting pla Service" -ForegroundColor Yellow
+Write-Output "Restarting pla Service"
 Stop-Service -Name "pla" -Force -ErrorAction SilentlyContinue
 Start-Service -Name "pla" -ErrorAction SilentlyContinue
 
-Write-Host "Restarting winmgmt Service" -ForegroundColor Yellow
+Write-Output "Restarting winmgmt Service"
 Stop-Service -Name "Winmgmt" -Force -ErrorAction SilentlyContinue
 Start-Service -Name "Winmgmt" -ErrorAction SilentlyContinue
 
@@ -940,6 +1082,15 @@ Start-Service -Name "Winmgmt" -ErrorAction SilentlyContinue
 if (Test-Path "$env:SystemRoot\SYSTEM32\WinSAT.exe" -PathType Leaf) {
     Write-Host "Running winsat formal" -ForegroundColor Green
     Start-Process -FilePath "$env:SystemRoot\SYSTEM32\WinSAT.exe" -ArgumentList "formal -restart clean" -Wait
+}
+
+Write-Output "Cleaning complete"
+Write-Output "Would you like to restart now? (Recommended)"
+$Readhost = Read-Host "(Y/N) Default is no"
+Switch ($ReadHost) {
+    Y { Write-Output "Do a clean restart now"; Start-Sleep -Seconds 2; Start-Process -FilePath "Shutdown.exe" -ArgumentList "/g /f /t 0" -Wait }
+    N {}
+    Default {}
 }
 
 Write-Host "Press any key to exit..."
