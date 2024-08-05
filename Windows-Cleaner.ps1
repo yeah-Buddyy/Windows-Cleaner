@@ -4,12 +4,34 @@ if (!([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]:
     exit;
 }
 
+# Rename title window
+$host.ui.RawUI.WindowTitle = "Windows Cleaner"
+
 # Increase the buffer size
 $bufferHeight = 9999
-
 $console = [System.Console]::BufferHeight = $bufferHeight
-
 Write-Host "Buffer size increased to Height: $bufferHeight" -ForegroundColor Green
+
+# Enable LongPaths
+$global:currentlongPathsEnabledValue = ""
+$longPathsEnabledRegKey = "Registry::HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\FileSystem"
+if (-not (Test-Path -Path $longPathsEnabledRegKey)) {
+    New-Item -Path $longPathsEnabledRegKey -Force
+}
+if ((Get-Item -Path $longPathsEnabledRegKey).GetValue("LongPathsEnabled") -ne $null) {
+    if ((Get-Item -Path $longPathsEnabledRegKey).GetValue("LongPathsEnabled") -eq "0") {
+        $global:currentlongPathsEnabledValue = "0"
+        New-ItemProperty -Path $longPathsEnabledRegKey -Force -Name "LongPathsEnabled" -PropertyType "Dword" -Value "1"
+    }
+} else {
+    $global:currentlongPathsEnabledValue = "0"
+    #Get-ItemPropertyValue "Registry::HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\FileSystem" "LongPathsEnabled"
+    New-ItemProperty -Path $longPathsEnabledRegKey -Force -Name "LongPathsEnabled" -PropertyType "Dword" -Value "1"
+}
+
+$LogDate = Get-Date -Format "MM-d-yy-HHmm"
+# Define log file location
+$Cleanuplog = "$PSScriptRoot\Windows-Cleaner_$LogDate.log"
 
 # Create backup folder
 $aclBackupPath = "$PSScriptRoot\ACL-Backup"
@@ -170,6 +192,49 @@ function Restore-Ownership {
     }
 }
 
+function Get-TrimStatus {
+    # Run the fsutil command and capture the output
+    $output = fsutil behavior query disabledeletenotify
+
+    # Initialize flags to track TRIM status for NTFS and ReFS
+    $ntfsTrimEnabled = $false
+    $refsTrimEnabled = $false
+
+    # Check the output lines for the status of DisableDeleteNotify
+    $output -split "`n" | ForEach-Object {
+        if ($_ -match "NTFS DisableDeleteNotify = (\d)") {
+            $ntfsStatus = [int]$matches[1]
+            $ntfsTrimEnabled = $ntfsStatus -eq 0
+        }
+        if ($_ -match "ReFS DisableDeleteNotify = (\d)") {
+            $refsStatus = [int]$matches[1]
+            $refsTrimEnabled = $refsStatus -eq 0
+        }
+    }
+
+    # Output the results
+    if ($ntfsTrimEnabled) {
+        Write-Output "TRIM is enabled for NTFS."
+    } else {
+        Write-Output "TRIM is disabled for NTFS."
+    }
+
+    if ($refsTrimEnabled) {
+        Write-Output "TRIM is enabled for ReFS."
+    } else {
+        Write-Output "TRIM is disabled for ReFS."
+    }
+
+    if (-not $ntfsTrimEnabled -and -not $refsTrimEnabled) {
+        Write-Output "TRIM is disabled on all file systems."
+        return $false
+    } elseif (-not $ntfsTrimEnabled -or -not $refsTrimEnabled) {
+        Write-Output "TRIM is disabled on ntfs or refs file system."
+        return $false
+    }
+    return $true
+}
+
 # Function to get the free space on the Windows drive
 function Get-FreeSpace {
     param (
@@ -188,6 +253,18 @@ $initialFreeSpaceGB = [math]::round($initialFreeSpaceBytes / 1GB, 2)
 $initialFreeSpaceMB = [math]::round($initialFreeSpaceBytes / 1MB, 2)
 
 Write-Host "Initial Free Space: $initialFreeSpaceGB GB ($initialFreeSpaceMB MB) ($initialFreeSpaceBytes Bytes)" -ForegroundColor Green
+
+# Calculate size of backup folder
+function Get-FolderSize {
+    param (
+        [string]$folderPath
+    )
+    if (Test-Path -Path $folderPath) {
+        return (Get-ChildItem -Path $folderPath -Recurse -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum
+    } else {
+        return 0
+    }
+}
 
 function Remove-StateFlags0112 {
     param(
@@ -221,7 +298,7 @@ function Remove-StateFlags0112 {
             if (Test-Path $keyPath) {
                 if (Get-ItemProperty -Path $keyPath -Name 'StateFlags0112' -ErrorAction SilentlyContinue) {
                     Remove-ItemProperty -Path $keyPath -Name 'StateFlags0112' -Force
-                    Write-Output "Removed 'StateFlags0112' from $keyPath"
+                    Write-Host "Removed 'StateFlags0112' from $keyPath" -ForegroundColor Yellow
                 }
             }
         }
@@ -230,6 +307,11 @@ function Remove-StateFlags0112 {
     # Start recursion
     Recurse-RemoveStateFlags0112 -keyPath $regPath
 }
+
+# Start Logging
+Start-Transcript -Path "$CleanupLog"
+
+######################################################## CLEAN STUFF ########################################################
 
 Write-Host "Removing the current Windows Clean Manager state flags" -ForegroundColor Green
 Remove-StateFlags0112 -rootKey "HKEY_LOCAL_MACHINE" -subKey "SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\VolumeCaches"
@@ -348,6 +430,7 @@ function Clear-SoftwareDistributionDownloadFolder {
 }
 
 function Get-PendingWindowsUpdates {
+    Write-Host "Getting pending windows updates" -ForegroundColor Green
     # Create an update session
     $UpdateSession = New-Object -ComObject Microsoft.Update.Session
     
@@ -474,13 +557,14 @@ foreach ($path in $etlPaths) {
 }
 
 # Define the path to the Temp directory
+# Get-ChildItem -Force parameter includes hidden files
 $tempPath = "$env:TEMP"
 
 if (Test-Path -Path "$tempPath") {
     Write-Host "Removing temp files #1" -ForegroundColor Green
     # Get all files in the Temp directory and its subdirectories
-    # Filter files older than 3 days and delete them
-    Get-ChildItem -Path $tempPath -Recurse -File | Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-3) } | ForEach-Object {
+    # Filter files older than 5 days and delete them
+    Get-ChildItem -Path $tempPath -Recurse -Force -File | Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-5) } | ForEach-Object {
         try {
             Remove-Item -Path $_.FullName -Force -ErrorAction Stop
             Write-Host "Deleted: $($_.FullName)" -ForegroundColor Yellow
@@ -488,7 +572,23 @@ if (Test-Path -Path "$tempPath") {
             Write-Host "Failed to delete $($_.FullName): $_" -ForegroundColor Red
         }
     }
-    Write-Output "All files older than 3 days in $tempPath have been processed."
+    Write-Output "All files older than 5 days in $tempPath have been processed."
+}
+if (Test-Path -Path "$tempPath") {
+    # Get all directories in the Temp directory and its subdirectories
+    $dirs = Get-ChildItem -Path $tempPath -Recurse -Force -Directory | Sort-Object -Property FullName -Descending
+    foreach ($dir in $dirs) {
+        # Check if the directory is empty
+        if (!(Get-ChildItem -Path $dir.FullName -Force)) {
+            try {
+                Remove-Item -Path $dir.FullName -Recurse -Force -ErrorAction Stop
+                Write-Host "Deleted empty directory: $($dir.FullName)" -ForegroundColor Yellow
+            } catch {
+                Write-Host "Failed to delete directory $($dir.FullName): $_" -ForegroundColor Red
+            }
+        }
+    }
+    Write-Output "All empty directories in $tempPath have been processed."
 }
 
 # Define the path to the Temp directory
@@ -497,8 +597,8 @@ $windirTempPath = "$Env:WinDir\Temp"
 if (Test-Path -Path "$windirTempPath") {
     Write-Host "Removing temp files #2" -ForegroundColor Green
     # Get all files in the Temp directory and its subdirectories
-    # Filter files older than 3 days and delete them
-    Get-ChildItem -Path $windirTempPath -Recurse -File | Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-3) } | ForEach-Object {
+    # Filter files older than 5 days and delete them
+    Get-ChildItem -Path $windirTempPath -Recurse -Force -File | Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-5) } | ForEach-Object {
         try {
             Remove-Item -Path $_.FullName -Force -ErrorAction Stop
             Write-Host "Deleted: $($_.FullName)" -ForegroundColor Yellow
@@ -506,7 +606,23 @@ if (Test-Path -Path "$windirTempPath") {
             Write-Host "Failed to delete $($_.FullName): $_" -ForegroundColor Red
         }
     }
-    Write-Output "All files older than 3 days in $windirTempPath have been processed."
+    Write-Output "All files older than 5 days in $windirTempPath have been processed."
+}
+if (Test-Path -Path "$windirTempPath") {
+    # Get all directories in the Temp directory and its subdirectories
+    $dirs = Get-ChildItem -Path $windirTempPath -Recurse -Force -Directory | Sort-Object -Property FullName -Descending
+    foreach ($dir in $dirs) {
+        # Check if the directory is empty
+        if (!(Get-ChildItem -Path $dir.FullName -Force)) {
+            try {
+                Remove-Item -Path $dir.FullName -Recurse -Force -ErrorAction Stop
+                Write-Host "Deleted empty directory: $($dir.FullName)" -ForegroundColor Yellow
+            } catch {
+                Write-Host "Failed to delete directory $($dir.FullName): $_" -ForegroundColor Red
+            }
+        }
+    }
+    Write-Output "All empty directories in $windirTempPath have been processed."
 }
 
 # Define the path to the Temp directory
@@ -515,8 +631,8 @@ $appdataLocalLowTempPath = "$env:userprofile\Appdata\LocalLow\Temp"
 if (Test-Path -Path "$appdataLocalLowTempPath") {
     Write-Host "Removing temp files #3" -ForegroundColor Green
     # Get all files in the Temp directory and its subdirectories
-    # Filter files older than 3 days and delete them
-    Get-ChildItem -Path $appdataLocalLowTempPath -Recurse -File | Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-3) } | ForEach-Object {
+    # Filter files older than 5 days and delete them
+    Get-ChildItem -Path $appdataLocalLowTempPath -Recurse -Force -File | Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-5) } | ForEach-Object {
         try {
             Remove-Item -Path $_.FullName -Force -ErrorAction Stop
             Write-Host "Deleted: $($_.FullName)" -ForegroundColor Yellow
@@ -524,7 +640,23 @@ if (Test-Path -Path "$appdataLocalLowTempPath") {
             Write-Host "Failed to delete $($_.FullName): $_" -ForegroundColor Red
         }
     }
-    Write-Output "All files older than 3 days in $appdataLocalLowTempPath have been processed."
+    Write-Output "All files older than 5 days in $appdataLocalLowTempPath have been processed."
+}
+if (Test-Path -Path "$appdataLocalLowTempPath") {
+    # Get all directories in the Temp directory and its subdirectories
+    $dirs = Get-ChildItem -Path $appdataLocalLowTempPath -Recurse -Force -Directory | Sort-Object -Property FullName -Descending
+    foreach ($dir in $dirs) {
+        # Check if the directory is empty
+        if (!(Get-ChildItem -Path $dir.FullName -Force)) {
+            try {
+                Remove-Item -Path $dir.FullName -Recurse -Force -ErrorAction Stop
+                Write-Host "Deleted empty directory: $($dir.FullName)" -ForegroundColor Yellow
+            } catch {
+                Write-Host "Failed to delete directory $($dir.FullName): $_" -ForegroundColor Red
+            }
+        }
+    }
+    Write-Output "All empty directories in $appdataLocalLowTempPath have been processed."
 }
 
 # Define the path to the Temp directory
@@ -533,8 +665,8 @@ $programdataTempPath = "$env:ProgramData\Microsoft\Search\Data\Temp"
 if (Test-Path -Path "$programdataTempPath") {
     Write-Host "Removing temp files #4" -ForegroundColor Green
     # Get all files in the Temp directory and its subdirectories
-    # Filter files older than 3 days and delete them
-    Get-ChildItem -Path $programdataTempPath -Recurse -File | Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-3) } | ForEach-Object {
+    # Filter files older than 5 days and delete them
+    Get-ChildItem -Path $programdataTempPath -Recurse -Force -File | Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-5) } | ForEach-Object {
         try {
             Remove-Item -Path $_.FullName -Force -ErrorAction Stop
             Write-Host "Deleted: $($_.FullName)" -ForegroundColor Yellow
@@ -543,7 +675,23 @@ if (Test-Path -Path "$programdataTempPath") {
         }
     }
     # Optional: Output a message to confirm the deletion
-    Write-Output "All files older than 3 days in $programdataTempPath have been processed."
+    Write-Output "All files older than 5 days in $programdataTempPath have been processed."
+}
+if (Test-Path -Path "$programdataTempPath") {
+    # Get all directories in the Temp directory and its subdirectories
+    $dirs = Get-ChildItem -Path $programdataTempPath -Recurse -Force -Directory | Sort-Object -Property FullName -Descending
+    foreach ($dir in $dirs) {
+        # Check if the directory is empty
+        if (!(Get-ChildItem -Path $dir.FullName -Force)) {
+            try {
+                Remove-Item -Path $dir.FullName -Recurse -Force -ErrorAction Stop
+                Write-Host "Deleted empty directory: $($dir.FullName)" -ForegroundColor Yellow
+            } catch {
+                Write-Host "Failed to delete directory $($dir.FullName): $_" -ForegroundColor Red
+            }
+        }
+    }
+    Write-Output "All empty directories in $programdataTempPath have been processed."
 }
 
 # Remove .rbs files
@@ -680,13 +828,40 @@ if (Test-Path -Path "$catroot2LogsPath") {
     Write-Output "All .log and .txt files in $catroot2LogsPath have been processed."
 }
 
+# https://blog.idera.com/database-tools/cleaning-week-finding-fat-log-file-backups/
 $windowsLogsPath = "$Env:WinDir\Logs"
 
 if (Test-Path -Path "$windowsLogsPath") {
     Write-Host "Removing windows log files" -ForegroundColor Green
 
+    # Neeed to remove logs from the cbs folder
+    # https://blog.idera.com/database-tools/cleaning-week-deleting-cbs-log-file/
+    Stop-Service -Name TrustedInstaller -Force -ErrorAction SilentlyContinue
+
     # Get all .log and .etl files in the directory and its subdirectories
-    Get-ChildItem -Path $windowsLogsPath -Recurse -File | Where-Object {
+    Get-ChildItem -Path $windowsLogsPath -Recurse -File -ErrorAction SilentlyContinue | Where-Object {
+        $_.Extension -eq ".log" -or $_.Extension -eq ".etl" -or $_.Extension -eq ".lo_" -or $_.Extension -eq ".cab"
+    } | ForEach-Object {
+        try {
+            Remove-Item -Path $_.FullName -Force -ErrorAction Stop
+            Write-Host "Deleted: $($_.FullName)" -ForegroundColor Yellow
+        } catch {
+            Write-Host "Failed to delete $($_.FullName): $_" -ForegroundColor Red
+        }
+    }
+
+    Write-Output "All .log, .etl and .cab files in $windowsLogsPath have been processed."
+
+    Start-Service -Name TrustedInstaller
+}
+
+$windowsLogFilesPath = "$Env:WinDir\System32\LogFiles"
+
+if (Test-Path -Path "$windowsLogFilesPath") {
+    Write-Host "Removing windows log files" -ForegroundColor Green
+
+    # Get all .log and .etl files in the directory and its subdirectories
+    Get-ChildItem -Path $windowsLogFilesPath -Recurse -File -ErrorAction SilentlyContinue | Where-Object {
         $_.Extension -eq ".log" -or $_.Extension -eq ".etl" -or $_.Extension -eq ".lo_"
     } | ForEach-Object {
         try {
@@ -697,7 +872,7 @@ if (Test-Path -Path "$windowsLogsPath") {
         }
     }
 
-    Write-Output "All .log and .etl files in $windowsLogsPath have been processed."
+    Write-Output "All .log and .etl files in $windowsLogFilesPath have been processed."
 }
 
 #$reportArchivePath = "$env:ALLUSERSPROFILE\Microsoft\Windows\WER\ReportArchive"
@@ -948,6 +1123,29 @@ if ($exitCodeStartComponentCleanup -eq 0) {
     Write-Host "The StartComponentCleanup operation failed with exit code $exitCodeStartComponentCleanup." -ForegroundColor Red
 }
 
+# Capture free space after cleaning
+$finalFreeSpaceBytes = Get-FreeSpace -driveRoot $windowsDriveRoot
+$finalFreeSpaceGB = [math]::round($finalFreeSpaceBytes / 1GB, 2)
+$finalFreeSpaceMB = [math]::round($finalFreeSpaceBytes / 1MB, 2)
+
+Write-Host "Final Free Space: $finalFreeSpaceGB GB ($finalFreeSpaceMB MB) ($finalFreeSpaceBytes Bytes)" -ForegroundColor Green
+
+# Calculate reclaimed space
+$reclaimedSpaceBytes = $finalFreeSpaceBytes - $initialFreeSpaceBytes
+$reclaimedSpaceGB = [math]::round($reclaimedSpaceBytes / 1GB, 2)
+$reclaimedSpaceMB = [math]::round($reclaimedSpaceBytes / 1MB, 2)
+
+Write-Host "Reclaimed Space: $reclaimedSpaceGB GB ($reclaimedSpaceMB MB) ($reclaimedSpaceBytes Bytes)" -ForegroundColor Green
+
+# Reset LongPathsEnabled to system default value
+if ($global:currentlongPathsEnabledValue -eq 0) {
+    New-ItemProperty -Path $longPathsEnabledRegKey -Force -Name "LongPathsEnabled" -PropertyType "Dword" -Value "0"
+}
+
+######################################################## CLEAN STUFF ########################################################
+
+######################################################## FIX STUFF ##########################################################
+
 # Verifies and fixes any corruption in the Component Store by verifying its system file backups against known good copies from the Windows Update servers through hash comparison
 # Run the DISM command
 Write-Host "Running DISM RestoreHealth" -ForegroundColor Green
@@ -1041,21 +1239,91 @@ if ($exitCodeCheckHealth -eq 0 -and $exitCodeScanHealth -eq 0) {
     }
 }
 
-# Capture free space after cleaning
-$finalFreeSpaceBytes = Get-FreeSpace -driveRoot $windowsDriveRoot
-$finalFreeSpaceGB = [math]::round($finalFreeSpaceBytes / 1GB, 2)
-$finalFreeSpaceMB = [math]::round($finalFreeSpaceBytes / 1MB, 2)
+Write-Host "Getting information about the disks" -ForegroundColor Green
+# Create a hash set to keep track of processed disk numbers
+$processedDisks = @{}
 
-Write-Host "Final Free Space: $finalFreeSpaceGB GB ($finalFreeSpaceMB MB) ($finalFreeSpaceBytes Bytes)" -ForegroundColor Green
+# Iterate over each volume with a drive letter
+$volumes = Get-Volume | Where-Object { $_.DriveLetter -ne $null -and $_.DriveType -ne "Removable"}
 
-# Calculate reclaimed space
-# exclude backup folder
-$minusBackupFolder = (Get-ChildItem -Path $aclBackupPath -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum
-$reclaimedSpaceBytes = $finalFreeSpaceBytes - $initialFreeSpaceBytes - $minusBackupFolder
-$reclaimedSpaceGB = [math]::round($reclaimedSpaceBytes / 1GB, 2)
-$reclaimedSpaceMB = [math]::round($reclaimedSpaceBytes / 1MB, 2)
+# Create an array to hold the results
+$driveInfo = @()
 
-Write-Host "Reclaimed Space: $reclaimedSpaceGB GB ($reclaimedSpaceMB MB) ($reclaimedSpaceBytes Bytes)" -ForegroundColor Green
+# Iterate through each volume
+foreach ($volume in $volumes) {
+    # Get the partitions associated with the volume
+    $partitions = Get-Partition | Where-Object { $_.AccessPaths -contains "$($volume.DriveLetter):\" }
+    
+    if ($partitions) {
+        # Iterate over each partition
+        foreach ($partition in $partitions) {
+            # Get the disk associated with the partition
+            $disk = Get-Disk -Number $partition.DiskNumber
+
+            # Check if the disk is not USB and has not been processed yet
+            if ($disk.BusType -ne "USB" -and -not $processedDisks.Contains($disk.Number)) {
+                # Add the disk number to the hash set
+                $processedDisks[$disk.Number] = $true
+
+                # Get the physical disk to obtain the MediaType
+                $physicalDisk = Get-PhysicalDisk | Where-Object { $_.DeviceId -eq $disk.Number }
+                
+                # Output the disk information
+                $driveInfo += [PSCustomObject]@{
+                    DeviceId = $disk.Number
+                    FriendlyName = $disk.FriendlyName
+                    OperationalStatus = $disk.OperationalStatus
+                    HealthStatus = $disk.HealthStatus
+                    DriveLetter = $volume.DriveLetter
+                    # BusType 17 = NVMe, 11 = SATA, 7 = USB. see https://learn.microsoft.com/de-de/windows-hardware/drivers/storage/msft-disk
+                    # BusType = $disk.BusType
+                    MediaType = $physicalDisk.MediaType
+                }
+            }
+        }
+    }
+}
+
+# Check if a defrag is recommended
+# Iterate through each object in the results
+foreach ($drive in $driveInfo) {
+    if ($($drive.MediaType) -eq "SSD" -and $($drive.OperationalStatus) -eq "Online" -and $($drive.HealthStatus) -eq "Healthy") {
+        # Get the instance of the Win32_Volume
+        $getVolume = Get-CimInstance -ClassName Win32_Volume -Filter "DriveLetter = '$($drive.DriveLetter):'"
+
+        # Invoke the DefragAnalysis method on the instance
+        $defragAnalysis = Invoke-CimMethod -InputObject $getVolume -MethodName DefragAnalysis
+
+        # Display the result
+        $isDefragRecommended = $defragAnalysis.DefragRecommended
+
+        # https://learn.microsoft.com/en-us/powershell/module/storage/optimize-volume?view=windowsserver2022-ps
+        if ($isDefragRecommended -eq "True") {
+            Write-Host "Trim now $($drive.FriendlyName)" -ForegroundColor Green
+            # Call the function to check TRIM status
+            $isTrim = Get-TrimStatus
+            if (-not($isTrim)) {
+                # Enable trim
+                fsutil behavior set DisableDeleteNotify 0
+            }
+            Optimize-Volume -DriveLetter $($drive.DriveLetter) -ReTrim -Verbose
+        }
+    } elseif ($($drive.MediaType) -eq "HDD" -and $($drive.OperationalStatus) -eq "Online" -and $($drive.HealthStatus) -eq "Healthy") {
+        # Get the instance of the Win32_Volume
+        $getVolume = Get-CimInstance -ClassName Win32_Volume -Filter "DriveLetter = '$($drive.DriveLetter):'"
+
+        # Invoke the DefragAnalysis method on the instance
+        $defragAnalysis = Invoke-CimMethod -InputObject $getVolume -MethodName DefragAnalysis
+
+        # Display the result
+        $isDefragRecommended = $defragAnalysis.DefragRecommended
+
+        if ($isDefragRecommended -eq "True") {
+            Write-Host "Defrag now $($drive.FriendlyName)" -ForegroundColor Green
+            Optimize-Volume -DriveLetter $($drive.DriveLetter) -Defrag -Verbose
+        }
+    }
+}
 
 Write-Host "Rebuilding performance counters" -ForegroundColor Green
 if (Test-Path "$env:SystemRoot\SYSTEM32\lodctr.exe" -PathType Leaf) {
@@ -1084,8 +1352,14 @@ if (Test-Path "$env:SystemRoot\SYSTEM32\WinSAT.exe" -PathType Leaf) {
     Start-Process -FilePath "$env:SystemRoot\SYSTEM32\WinSAT.exe" -ArgumentList "formal -restart clean" -Wait
 }
 
-Write-Output "Cleaning complete"
-Write-Output "Would you like to restart now? (Recommended)"
+######################################################## FIX STUFF ##########################################################
+
+# Stop Logging
+Stop-Transcript
+
+Write-Host "Cleaning complete" -ForegroundColor Green
+Write-Host "`n"
+Write-Host "Would you like to restart now? (Recommended)" -ForegroundColor Yellow
 $Readhost = Read-Host "(Y/N) Default is no"
 Switch ($ReadHost) {
     Y { Write-Output "Do a clean restart now"; Start-Sleep -Seconds 2; Start-Process -FilePath "Shutdown.exe" -ArgumentList "/g /f /t 0" -Wait }
