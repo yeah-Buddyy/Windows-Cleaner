@@ -1545,15 +1545,24 @@ Write-Host "`n"
 # Write-Host "Running DISM CheckHealth" -ForegroundColor Green
 # $isCheckHealth = CheckHealth
 
-Write-Host "Running DISM ScanHealth" -ForegroundColor Green
-$isScanHealth = ScanHealth
+# Write-Host "Running DISM ScanHealth" -ForegroundColor Green
+# $isScanHealth = ScanHealth
 
-if (-not($isScanHealth)) {
-    Write-Host "Running DISM RestoreHealth" -ForegroundColor Green
-    $isRestoreHealth = RestoreHealth
-}
+# if (-not($isScanHealth)) {
+    # Write-Host "Running DISM RestoreHealth" -ForegroundColor Green
+    # $isRestoreHealth = RestoreHealth
+# }
 
-if ($isScanHealth -or $isRestoreHealth) {
+# if ($isScanHealth -or $isRestoreHealth) {
+    # Write-Host "Running SFC ScanNow" -ForegroundColor Green
+    # SfcScanNow
+# }
+
+# Why do we need ScanHealth when RestoreHealth includes ScanHealth ?
+Write-Host "Running DISM RestoreHealth" -ForegroundColor Green
+$isRestoreHealth = RestoreHealth
+
+if ($isRestoreHealth) {
     Write-Host "Running SFC ScanNow" -ForegroundColor Green
     SfcScanNow
 }
