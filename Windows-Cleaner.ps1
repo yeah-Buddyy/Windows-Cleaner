@@ -310,7 +310,8 @@ function GetMachineType {
                 Write-Output "This Machine is Virtual on AWS."
                 return $true
             } else {
-                Write-Output "This Machine is Physical Platform."
+                # Write-Output "This Machine is Physical Platform."
+                return $false
             }
         }
     }
@@ -1251,6 +1252,10 @@ function GetDriveInfo {
 
                     # Get the physical disk to obtain the MediaType
                     $physicalDisk = Get-PhysicalDisk | Where-Object { $_.DeviceId -eq $disk.Number }
+
+                    # Obtain disk health information
+                    $DiskHealth = Get-StorageReliabilityCounter -PhysicalDisk (Get-PhysicalDisk -FriendlyName $physicalDisk.FriendlyName) | 
+                                Select-Object Wear, ReadErrorsTotal, ReadErrorsUncorrected, ReadErrorsCorrected, WriteErrorsTotal, WriteErrorsUncorrected, WriteErrorscorrected, Temperature, TemperatureMax
                     
                     # Output the disk information
                     $driveInfo += [PSCustomObject]@{
@@ -1262,6 +1267,9 @@ function GetDriveInfo {
                         # BusType 17 = NVMe, 11 = SATA, 7 = USB. see https://learn.microsoft.com/de-de/windows-hardware/drivers/storage/msft-disk
                         # BusType = $disk.BusType
                         MediaType = $physicalDisk.MediaType
+                        DiskWear = $DiskHealth.Wear
+                        ReadErrorsTotal = $DiskHealth.ReadErrorsTotal
+                        WriteErrorsTotal = $DiskHealth.WriteErrorsTotal
                     }
                 }
             }
@@ -1276,15 +1284,44 @@ function AnalyzeAndOptimizeDrives {
         [array]$driveInfo
     )
 
+    # Define thresholds
+    $MaxWearValue = 80
+    $MaxRWErrors = 100
+
     $isVirtualMachine = GetMachineType
     if ($isVirtualMachine) {
         Write-Output "Virtualmachine detected.. Skipping defrag and trim"
         return
     }
 
+    # Get SMART failure data once
+    $DriveSMARTStatuses = Get-CimInstance -Namespace root\wmi -Class MSStorageDriver_FailurePredictStatus -ErrorAction SilentlyContinue | Where-Object { $_.PredictFailure -eq $true }
+
     # Check if a defrag is recommended
     # Iterate through each object in the results
     foreach ($drive in $driveInfo) {
+        $DriveSMARTStatus = $DriveSMARTStatuses | Where-Object { $_.InstanceName -eq $drive.DeviceId }
+
+        if ($DriveSMARTStatus) {
+            Write-Output "SMART predicted failure detected with reason code $($DriveSMARTStatus.Reason) Skipping defrag and trim"
+            return
+        }
+
+        if ($null -ne [int]$drive.DiskWear -and [int]$drive.DiskWear -ge $MaxWearValue) {
+            Write-Output "Disk failure likely. Current wear value: $($drive.DiskWear), above threshold: $MaxWearValue% Skipping defrag and trim"
+            return
+        }
+
+        if ($null -ne [int]$drive.ReadErrorsTotal -and [int]$drive.ReadErrorsTotal -ge $MaxRWErrors) {
+            Write-Output "High number of read errors: $($drive.ReadErrorsTotal), above threshold: $MaxRWErrors Skipping defrag and trim"
+            return
+        }
+
+        if ($null -ne [int]$drive.WriteErrorsTotal -and [int]$drive.WriteErrorsTotal -ge $MaxRWErrors) {
+            Write-Output "High number of write errors: $($drive.WriteErrorsTotal), above threshold: $MaxRWErrors Skipping defrag and trim"
+            return
+        }
+
         if ($($drive.MediaType) -eq "SSD" -and $($drive.OperationalStatus) -eq "Online" -and $($drive.HealthStatus) -eq "Healthy") {
             # Get the instance of the Win32_Volume
             $getVolume = Get-CimInstance -ClassName Win32_Volume -Filter "DriveLetter = '$($drive.DriveLetter):'"
