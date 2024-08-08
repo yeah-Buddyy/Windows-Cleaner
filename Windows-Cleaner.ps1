@@ -1303,23 +1303,23 @@ function AnalyzeAndOptimizeDrives {
         $DriveSMARTStatus = $DriveSMARTStatuses | Where-Object { $_.InstanceName -eq $drive.DeviceId }
 
         if ($DriveSMARTStatus) {
-            Write-Output "SMART predicted failure detected with reason code $($DriveSMARTStatus.Reason) Skipping defrag and trim"
-            return
+            Write-Output "$($drive.FriendlyName) - SMART predicted failure detected with reason code $($DriveSMARTStatus.Reason) Skipping defrag and trim"
+            continue
         }
 
         if ($null -ne [int]$drive.DiskWear -and [int]$drive.DiskWear -ge $MaxWearValue) {
-            Write-Output "Disk failure likely. Current wear value: $($drive.DiskWear), above threshold: $MaxWearValue% Skipping defrag and trim"
-            return
+            Write-Output "$($drive.FriendlyName) - Disk failure likely. Current wear value: $($drive.DiskWear), above threshold: $MaxWearValue% Skipping defrag and trim"
+            continue
         }
 
         if ($null -ne [int]$drive.ReadErrorsTotal -and [int]$drive.ReadErrorsTotal -ge $MaxRWErrors) {
-            Write-Output "High number of read errors: $($drive.ReadErrorsTotal), above threshold: $MaxRWErrors Skipping defrag and trim"
-            return
+            Write-Output "$($drive.FriendlyName) - High number of read errors: $($drive.ReadErrorsTotal), above threshold: $MaxRWErrors Skipping defrag and trim"
+            continue
         }
 
         if ($null -ne [int]$drive.WriteErrorsTotal -and [int]$drive.WriteErrorsTotal -ge $MaxRWErrors) {
-            Write-Output "High number of write errors: $($drive.WriteErrorsTotal), above threshold: $MaxRWErrors Skipping defrag and trim"
-            return
+            Write-Output "$($drive.FriendlyName) - High number of write errors: $($drive.WriteErrorsTotal), above threshold: $MaxRWErrors Skipping defrag and trim"
+            continue
         }
 
         if ($($drive.MediaType) -eq "SSD" -and $($drive.OperationalStatus) -eq "Online" -and $($drive.HealthStatus) -eq "Healthy") {
@@ -1558,7 +1558,7 @@ Write-Host "`n"
     # SfcScanNow
 # }
 
-# Why do we need ScanHealth when RestoreHealth includes ScanHealth ?
+# RestoreHealth includes ScanHealth and CheckHealth
 Write-Host "Running DISM RestoreHealth" -ForegroundColor Green
 $isRestoreHealth = RestoreHealth
 
