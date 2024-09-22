@@ -67,7 +67,7 @@ function RunAsTI ($cmd,$arg) { $id='RunAsTI'; $key="Registry::HKU\$(((whoami /us
 if (((whoami /user)-split' ')[-1]-ne'S-1-5-18') {
     # Code to execute if not running as Local System
     # Run script as Local System User
-    RunAsTI powershell "-f $($MyInvocation.MyCommand.Path) -NoProfile -NoLogo -WindowStyle Hidden -ExecutionPolicy Bypass"; return
+    RunAsTI powershell "-f `"$($MyInvocation.MyCommand.Path)`" -NoProfile -NoLogo -WindowStyle Hidden -ExecutionPolicy Bypass"; return
 }
 
 if (((whoami /user)-split' ')[-1]-eq'S-1-5-18') {
